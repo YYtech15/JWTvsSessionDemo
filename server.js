@@ -10,11 +10,9 @@ const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev_session_secret";
 const JWT_SECRET = process.env.JWT_SECRET || "dev_jwt_secret";
 
-// --- Middleware
 app.use(express.json());
 app.use(cookieParser());
 
-// Session (Cookie-based)
 app.use(
   session({
     name: "connect.sid",
@@ -24,23 +22,15 @@ app.use(
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      // 本番で https のとき true
       secure: false,
-      maxAge: 1000 * 60 * 60, // 1h
+      maxAge: 1000 * 60 * 60,
     },
   })
 );
 
-// Static files
 app.use(express.static(path.join(__dirname, "public")));
 
-// --- In-memory user store (学習用)
 const users = new Map(); // username -> { username, password }
-
-// --- Helpers
-function safeUser(u) {
-  return u ? { username: u.username } : null;
-}
 
 function signJwt(payload) {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "1h" });
@@ -54,16 +44,14 @@ function authJwt(req, res, next) {
   }
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    req.jwtUser = decoded; // { username, iat, exp }
+    req.jwtUser = decoded;
     next();
-  } catch (e) {
+  } catch {
     return res.status(401).json({ error: "Invalid/expired token" });
   }
 }
 
-// =========================
-// Session auth routes
-// =========================
+// ---- Session
 app.post("/session/register", (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: "username/password required" });
@@ -77,15 +65,14 @@ app.post("/session/login", (req, res) => {
   const u = users.get(username);
   if (!u || u.password !== password) return res.status(401).json({ error: "Invalid credentials" });
 
-  req.session.user = { username: u.username }; // ← サーバ側に「ログイン状態」が残る
-  res.json({ ok: true, user: safeUser(u) });
+  req.session.user = { username: u.username };
+  res.json({ ok: true, note: "Session login OK (server remembers you)" });
 });
 
 app.get("/session/me", (req, res) => {
-  // Cookie(connect.sid) → サーバで session を引いて user を返す
   const user = req.session.user || null;
   if (!user) return res.status(401).json({ error: "Not logged in (session)" });
-  res.json({ ok: true, user });
+  res.json({ ok: true, user, note: "Cookie(connect.sid) -> server session -> user" });
 });
 
 app.post("/session/logout", (req, res) => {
@@ -96,9 +83,7 @@ app.post("/session/logout", (req, res) => {
   });
 });
 
-// =========================
-// JWT auth routes
-// =========================
+// ---- JWT
 app.post("/jwt/register", (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) return res.status(400).json({ error: "username/password required" });
@@ -112,32 +97,37 @@ app.post("/jwt/login", (req, res) => {
   const u = users.get(username);
   if (!u || u.password !== password) return res.status(401).json({ error: "Invalid credentials" });
 
-  // ← サーバは状態を保持せず「トークン」を返すだけ
   const token = signJwt({ username: u.username });
-  res.json({ ok: true, token, user: safeUser(u) });
+  res.json({ ok: true, token, note: "JWT login OK (server gives you a card)" });
 });
 
 app.get("/jwt/me", authJwt, (req, res) => {
-  // Authorization: Bearer <token> を毎回送る
-  res.json({ ok: true, user: { username: req.jwtUser.username } });
+  res.json({ ok: true, user: { username: req.jwtUser.username }, note: "Authorization: Bearer <token> required" });
 });
 
 app.post("/jwt/logout", (req, res) => {
-  // JWTは基本「サーバ側ログアウト」がない（状態を持たない）
-  // → クライアント側で token を捨てるのが基本
-  res.json({ ok: true, note: "JWT logout = delete token on client (unless you implement blacklist/rotation)" });
+  res.json({ ok: true, note: "JWT logout = delete token on client" });
 });
 
-// --- Debug endpoint（Cookieやheaders確認）
+// ---- Debug (見える化)
 app.get("/debug", (req, res) => {
+  const cookieSid = req.cookies["connect.sid"] || null;
+  const auth = req.headers.authorization || null;
+
   res.json({
-    cookies: req.cookies,
-    sessionId: req.sessionID,
-    sessionUser: req.session.user || null,
-    authorization: req.headers.authorization || null,
+    browser_sends: {
+      cookie_connect_sid: cookieSid ? "(present)" : "(none)",
+      authorization_header: auth ? "(present)" : "(none)",
+    },
+    server_state: {
+      sessionId: req.sessionID || null,
+      sessionUser: req.session?.user || null,
+    },
+    raw: {
+      cookies: req.cookies,
+      authorization: auth,
+    },
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running: http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server running: http://localhost:${PORT}`));

@@ -1,90 +1,165 @@
 function $(id) { return document.getElementById(id); }
 
+let lastAuthSent = "(none)";
+
 async function api(path, opts = {}) {
   const res = await fetch(path, {
     headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
-    credentials: "include", // ← Session: Cookie送受信のため重要（JWTでも害はない）
+    credentials: "include", // SessionのCookie送受信に必要
     ...opts,
   });
+
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
   return { status: res.status, data };
 }
 
-function show(preId, obj) {
-  $(preId).textContent = JSON.stringify(obj, null, 2);
+function show(obj) {
+  $("out").textContent = JSON.stringify(obj, null, 2);
 }
 
-// ---- Session
-async function sessionRegister() {
-  const r = await api("/session/register", {
-    method: "POST",
-    body: JSON.stringify({ username: $("s_user").value, password: $("s_pass").value }),
-  });
-  show("s_out", r);
-}
-async function sessionLogin() {
-  const r = await api("/session/login", {
-    method: "POST",
-    body: JSON.stringify({ username: $("s_user").value, password: $("s_pass").value }),
-  });
-  show("s_out", r);
-}
-async function sessionMe() {
-  const r = await api("/session/me");
-  show("s_out", r);
-}
-async function sessionLogout() {
-  const r = await api("/session/logout", { method: "POST" });
-  show("s_out", r);
-}
-
-// ---- JWT
 function setToken(t) {
   if (t) localStorage.setItem("demo_jwt", t);
   else localStorage.removeItem("demo_jwt");
-  $("token_state").textContent = localStorage.getItem("demo_jwt") ? "(stored)" : "(none)";
 }
-setToken(localStorage.getItem("demo_jwt"));
+
+function refreshStates() {
+  $("token_state").textContent = localStorage.getItem("demo_jwt") ? "(present)" : "(none)";
+  $("auth_state").textContent = lastAuthSent;
+}
+
+function updateLoginState(debugData) {
+  const el = $("loginState");
+  const hasSession = debugData?.server_state?.sessionUser !== null;
+  const hasJwt = localStorage.getItem("demo_jwt") !== null;
+
+  if (hasSession) {
+    el.textContent = "今の状態：Sessionログイン中";
+    el.style.background = "#dbeafe";
+  } else if (hasJwt) {
+    el.textContent = "今の状態：JWTログイン中";
+    el.style.background = "#dcfce7";
+  } else {
+    el.textContent = "今の状態：未ログイン";
+    el.style.background = "#f3f4f6";
+  }
+}
+
+async function debugAndShow(note) {
+  const token = localStorage.getItem("demo_jwt");
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+
+  lastAuthSent = token ? "Bearer (sent)" : "(none)";
+  refreshStates();
+
+  const r = await api("/debug", { headers });
+
+  $("cookie_state").textContent =
+    r.data?.browser_sends?.cookie_connect_sid || "?";
+
+  updateLoginState(r.data);
+
+  show({ note, debug: r });
+}
+
+// 初期表示
+refreshStates();
+debugAndShow("最初の状態（まだ何もしてない）");
+
+// --------------------
+// 追加：登録ボタン
+// --------------------
+async function sessionRegister() {
+  const username = $("user").value;
+  const password = $("pass").value;
+
+  const r = await api("/session/register", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+
+  await debugAndShow("Session登録を押した後（登録できた？）");
+  show({ action: "sessionRegister", result: r, hint: "409なら『もう登録済み』なのでOKです", after_debug: JSON.parse($("out").textContent).debug });
+}
 
 async function jwtRegister() {
+  const username = $("user").value;
+  const password = $("pass").value;
+
   const r = await api("/jwt/register", {
     method: "POST",
-    body: JSON.stringify({ username: $("j_user").value, password: $("j_pass").value }),
+    body: JSON.stringify({ username, password }),
   });
-  show("j_out", r);
+
+  await debugAndShow("JWT登録を押した後（登録できた？）");
+  show({ action: "jwtRegister", result: r, hint: "409なら『もう登録済み』なのでOKです", after_debug: JSON.parse($("out").textContent).debug });
 }
 
-async function jwtLogin() {
-  const r = await api("/jwt/login", {
+// --------------------
+// ログイン→確認（授業向けの流れ）
+// --------------------
+async function sessionLoginAndCheck() {
+  const username = $("user").value;
+  const password = $("pass").value;
+
+  const login = await api("/session/login", {
     method: "POST",
-    body: JSON.stringify({ username: $("j_user").value, password: $("j_pass").value }),
+    body: JSON.stringify({ username, password }),
   });
-  if (r.data && r.data.token) setToken(r.data.token);
-  show("j_out", r);
+
+  const me = await api("/session/me"); // Cookieで通るはず
+
+  await debugAndShow("Sessionログイン→確認後（Cookieが送られている？）");
+  show({
+    action: "sessionLoginAndCheck",
+    login,
+    me,
+    note: "SessionはCookie(connect.sid)が勝手に送られる",
+    debug: JSON.parse($("out").textContent).debug,
+  });
 }
 
-async function jwtMe() {
+async function jwtLoginAndCheck() {
+  const username = $("user").value;
+  const password = $("pass").value;
+
+  const login = await api("/jwt/login", {
+    method: "POST",
+    body: JSON.stringify({ username, password }),
+  });
+
+  if (login.data?.token) setToken(login.data.token);
+
   const token = localStorage.getItem("demo_jwt");
-  const r = await api("/jwt/me", {
+  const me = await api("/jwt/me", {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
-  show("j_out", r);
+
+  await debugAndShow("JWTログイン→確認後（Authorizationが送られている？）");
+  show({
+    action: "jwtLoginAndCheck",
+    login: { status: login.status, hasToken: !!login.data?.token },
+    me,
+    note: "JWTはAuthorization: Bearer <token> がないと通れない",
+    debug: JSON.parse($("out").textContent).debug,
+  });
 }
 
-async function jwtLogout() {
-  // JWTは「サーバ側に消す状態がない」ので token を捨てる
+// --------------------
+// リセット＆/debugだけ
+// --------------------
+async function resetAll() {
+  await api("/session/logout", { method: "POST" });
   setToken(null);
-  const r = await api("/jwt/logout", { method: "POST" });
-  show("j_out", r);
+
+  lastAuthSent = "(none)";
+  refreshStates();
+
+  await debugAndShow("リセット後：CookieもTokenもない状態に戻る");
 }
 
-// ---- Debug
-async function debug() {
-  const token = localStorage.getItem("demo_jwt");
-  const r = await api("/debug", {
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-  });
-  show("d_out", r);
+async function debugOnly() {
+  await debugAndShow("/debug だけ確認（持ち物チェック用）");
 }
